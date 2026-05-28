@@ -1,13 +1,14 @@
-// RUN: mlir-opt -convert-memref-to-emitc="lower-to-cpp=true" %s -split-input-file | FileCheck %s --check-prefix=CPP
-// RUN: mlir-opt -convert-memref-to-emitc="lower-to-cpp=false" %s -split-input-file | FileCheck %s --check-prefix=NOCPP
+// RUN: mlir-opt -convert-memref-to-emitc="lower-to-cpp=true" %s | FileCheck %s --check-prefix=CPP
+// RUN: mlir-opt -convert-memref-to-emitc="lower-to-cpp=false" %s | FileCheck %s --check-prefix=NOCPP
 
-/// These tests are intentionally narrow and cover only heap-backed memrefs,
-/// deallocated via `free`: `memref.alloc` results and their pointer-backed
-/// form. `memref.alloca` is stack storage, and ordinary memref function
-/// arguments lower to arrays rather than owned heap pointers in this conversion.
+/// Tests for converting `memref.alloc` and `memref.dealloc`.
+/// At the moment, `memref.dealloc` lowering only accepts the pointer-backed form
+/// produced by the current `memref.alloc` lowering, so alloc and dealloc tests
+/// are kept together.
 
 func.func @alloc_and_dealloc() {
   %alloc = memref.alloc() : memref<999xi32>
+  memref.dealloc %alloc : memref<999xi32>
   return
 }
 
@@ -41,8 +42,9 @@ func.func @alloc_and_dealloc() {
 // NOCPP:          emitc.call_opaque "free"(%[[FREE_PTR]]) : (!emitc.ptr<!emitc.opaque<"void">>) -> ()
 // NOCPP:          return
 
-func.func @alloc_aligned() {
+func.func @alloc_and_dealloc_aligned() {
   %alloc = memref.alloc() {alignment = 64 : i64} : memref<999xf32>
+  memref.dealloc %alloc : memref<999xf32>
   return
 }
 
@@ -76,8 +78,9 @@ func.func @alloc_aligned() {
 // NOCPP:         emitc.call_opaque "free"(%[[FREE_PTR]]) : (!emitc.ptr<!emitc.opaque<"void">>) -> ()
 // NOCPP:         return
 
-func.func @allocating_multi() {
-  %alloc_5 = memref.alloc() : memref<7x999xi32>
+func.func @allocating_and_deallocating_multi() {
+  %alloc = memref.alloc() : memref<7x999xi32>
+  memref.dealloc %alloc : memref<7x999xi32>
   return
 }
 
