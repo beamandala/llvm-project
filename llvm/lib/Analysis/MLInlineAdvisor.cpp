@@ -25,6 +25,7 @@
 #include "llvm/Analysis/MLModelRunner.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
+#include "llvm/Analysis/EmitCModeModelRunner.h"
 #include "llvm/Analysis/ReleaseModeModelRunner.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/TensorSpec.h"
@@ -72,19 +73,44 @@ using CompiledModelType = llvm::InlinerSizeModel;
 using CompiledModelType = NoopSavedModelImpl;
 #endif
 
+// std::unique_ptr<InlineAdvisor>
+// llvm::getReleaseModeAdvisor(Module &M, ModuleAnalysisManager &MAM,
+//                             std::function<bool(CallBase &)> GetDefaultAdvice) {
+//   if (!llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() &&
+//       InteractiveChannelBaseName.empty())
+//     return nullptr;
+//   auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
+//       -> std::unique_ptr<MLModelRunner> {
+//     std::unique_ptr<MLModelRunner> AOTRunner;
+//     if (InteractiveChannelBaseName.empty())
+//       AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+//           M.getContext(), InputFeatures, DecisionName,
+//           EmbeddedModelRunnerOptions().setModelSelector(ModelSelector));
+//     else {
+//       AOTRunner = std::make_unique<InteractiveModelRunner>(
+//           M.getContext(), InputFeatures, InlineDecisionSpec,
+//           InteractiveChannelBaseName + ".out",
+//           InteractiveChannelBaseName + ".in");
+//     }
+//     return AOTRunner;
+//   };
+//   return std::make_unique<MLInlineAdvisor>(M, MAM, RunnerFactory,
+//                                            GetDefaultAdvice);
+// }
+
 std::unique_ptr<InlineAdvisor>
 llvm::getReleaseModeAdvisor(Module &M, ModuleAnalysisManager &MAM,
                             std::function<bool(CallBase &)> GetDefaultAdvice) {
-  if (!llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() &&
-      InteractiveChannelBaseName.empty())
-    return nullptr;
+  // No evaluator validation for EmitC runner
+  // if (!llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() &&
+  //     InteractiveChannelBaseName.empty())
+  //   return nullptr;
   auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
       -> std::unique_ptr<MLModelRunner> {
     std::unique_ptr<MLModelRunner> AOTRunner;
     if (InteractiveChannelBaseName.empty())
-      AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
-          M.getContext(), InputFeatures, DecisionName,
-          EmbeddedModelRunnerOptions().setModelSelector(ModelSelector));
+      AOTRunner = std::make_unique<EmitCModeModelRunner>(
+          M.getContext(), InputFeatures, DecisionName);
     else {
       AOTRunner = std::make_unique<InteractiveModelRunner>(
           M.getContext(), InputFeatures, InlineDecisionSpec,
