@@ -83,7 +83,9 @@ public:
     }
 
     for (auto globalOp : globalsToMove) {
-      rewriter.clone(*globalOp);
+      emitc::FieldOp::create(rewriter, funcOp->getLoc(),
+                             globalOp.getSymNameAttr(), globalOp.getTypeAttr(),
+                             globalOp.getInitialValueAttr());
     }
 
     rewriter.setInsertionPointToEnd(&newClassOp.getBody().front());
@@ -112,6 +114,14 @@ public:
     llvm::BitVector argsToErase(newFuncOp.getNumArguments(), true);
     if (failed(newFuncOp.eraseArguments(argsToErase)))
       newFuncOp->emitOpError("failed to erase all arguments using BitVector");
+
+    newFuncOp.walk([&](emitc::GetGlobalOp getGlobalOp) {
+      rewriter.setInsertionPoint(getGlobalOp);
+      emitc::GetFieldOp getFieldOp = emitc::GetFieldOp::create(
+          rewriter, getGlobalOp.getLoc(), getGlobalOp.getType(),
+          getGlobalOp.getNameAttr());
+      rewriter.replaceOp(getGlobalOp, getFieldOp);
+    });
 
     rewriter.replaceOp(funcOp, newClassOp);
     return success();
