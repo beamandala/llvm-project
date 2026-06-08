@@ -12,8 +12,10 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/WalkPatternRewriteDriver.h"
+#include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
 using namespace emitc;
@@ -28,12 +30,20 @@ struct WrapFuncInClassPass
     : public impl::WrapFuncInClassPassBase<WrapFuncInClassPass> {
   using WrapFuncInClassPassBase::WrapFuncInClassPassBase;
   void runOnOperation() override {
-    Operation *rootOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
+
+    llvm::SmallVector<emitc::GlobalOp, 4> globalsToMove;
+    moduleOp.walk([&](mlir::emitc::GlobalOp op) { globalsToMove.push_back(op); });
 
     RewritePatternSet patterns(&getContext());
-    populateWrapFuncInClass(patterns, funcName);
+    populateWrapFuncInClass(patterns, funcName, globalsToMove);
 
-    walkAndApplyPatterns(rootOp, std::move(patterns));
+    walkAndApplyPatterns(moduleOp, std::move(patterns));
+
+    for (auto globalOp : globalsToMove) {
+      if (globalOp)
+        globalOp.erase();
+    }
   }
 };
 
@@ -43,8 +53,8 @@ struct WrapFuncInClassPass
 
 class WrapFuncInClass : public OpRewritePattern<emitc::FuncOp> {
 public:
-  WrapFuncInClass(MLIRContext *context, StringRef funcName)
-      : OpRewritePattern<emitc::FuncOp>(context), funcName(funcName) {}
+  WrapFuncInClass(MLIRContext *context, StringRef funcName, llvm::SmallVector<emitc::GlobalOp, 4> &globalsToMove)
+      : OpRewritePattern<emitc::FuncOp>(context), funcName(funcName), globalsToMove(globalsToMove) {}
 
   LogicalResult matchAndRewrite(emitc::FuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
@@ -70,6 +80,10 @@ public:
       if (argAttrs && idx < argAttrs->size()) {
         fieldop->setDiscardableAttrs(funcOp.getArgAttrDict(idx));
       }
+    }
+
+    for (auto globalOp : globalsToMove) {
+      rewriter.clone(*globalOp);
     }
 
     rewriter.setInsertionPointToEnd(&newClassOp.getBody().front());
@@ -107,9 +121,10 @@ private:
   /// Name of the newly generated member function with body matching the input
   /// function.
   std::string funcName;
+  llvm::SmallVector<emitc::GlobalOp, 4> globalsToMove;
 };
 
 void mlir::emitc::populateWrapFuncInClass(RewritePatternSet &patterns,
-                                          StringRef funcName) {
-  patterns.add<WrapFuncInClass>(patterns.getContext(), funcName);
+                                          StringRef funcName, llvm::SmallVector<emitc::GlobalOp, 4>& globalsToMove) {
+  patterns.add<WrapFuncInClass>(patterns.getContext(), funcName, globalsToMove);
 }

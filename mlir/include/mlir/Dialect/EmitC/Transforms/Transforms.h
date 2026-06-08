@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace emitc {
@@ -32,7 +33,7 @@ void populateExpressionPatterns(RewritePatternSet &patterns);
 // The WrapFuncInClass pass.
 //===----------------------------------------------------------------------===//
 
-void populateWrapFuncInClass(RewritePatternSet &patterns, StringRef fName);
+void populateWrapFuncInClass(RewritePatternSet &patterns, StringRef funcName, llvm::SmallVector<emitc::GlobalOp, 4> &globalsToMove);
 
 } // namespace emitc
 } // namespace mlir
