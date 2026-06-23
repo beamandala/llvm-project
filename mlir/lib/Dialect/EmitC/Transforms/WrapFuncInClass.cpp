@@ -92,7 +92,7 @@ public:
     FunctionType funcType = funcOp.getFunctionType();
     Location loc = funcOp.getLoc();
     FuncOp newFuncOp =
-        emitc::FuncOp::create(rewriter, loc, (funcName), funcType);
+        emitc::FuncOp::create(rewriter, loc, (funcName), funcType, funcOp->getAttrs());
 
     rewriter.createBlock(&newFuncOp.getBody());
     newFuncOp.getBody().takeBody(funcOp.getBody());
