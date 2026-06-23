@@ -109,7 +109,7 @@ public:
     rewriter.setInsertionPointToEnd(&newClassOp.getBody().front());
     FunctionType funcType = funcOp.getFunctionType();
     Location loc = funcOp.getLoc();
-    FuncOp newFuncOp = FuncOp::create(rewriter, loc, (funcName), funcType);
+    FuncOp newFuncOp = FuncOp::create(rewriter, loc, (funcName), funcType, funcOp->getAttrs());
 
     rewriter.createBlock(&newFuncOp.getBody());
     newFuncOp.getBody().takeBody(funcOp.getBody());
