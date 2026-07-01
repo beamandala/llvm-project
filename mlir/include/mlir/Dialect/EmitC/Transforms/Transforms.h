@@ -33,7 +33,9 @@ void populateExpressionPatterns(RewritePatternSet &patterns);
 // The WrapFuncInClass pass.
 //===----------------------------------------------------------------------===//
 
-void populateWrapFuncInClass(RewritePatternSet &patterns, StringRef funcName, llvm::SmallVector<emitc::GlobalOp, 4> &globalsToMove);
+void populateWrapFuncInClass(
+    RewritePatternSet &patterns, StringRef funcName,
+    DenseMap<FuncOp, DenseSet<GlobalOp>> &globalsToMove);
 
 } // namespace emitc
 } // namespace mlir
