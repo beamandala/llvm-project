@@ -1,5 +1,10 @@
+if (TARGET mlgo_models_gen)
+  list(APPEND MLDeps mlgo_models_gen)
+endif()
+
 if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
   include(TensorFlowCompile)
+
   set(LLVM_INLINER_MODEL_PATH_DEFAULT "models/inliner-Oz")
 
   set(LLVM_INLINER_MODEL_CURRENT_URL "<UNSPECIFIED>" CACHE STRING "URL to download the LLVM inliner model")

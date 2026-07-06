@@ -72,20 +72,59 @@ using CompiledModelType = llvm::InlinerSizeModel;
 using CompiledModelType = NoopSavedModelImpl;
 #endif
 
+#include "llvm/Analysis/EmitCModeModelRunner.h"
+
+// 1. Generate the Enum (with a fallback option)
+enum class MLGOModelChoice {
+  Default,
+#define MLGO_MODEL(CLASS_NAME, CLI_FLAG) CLASS_NAME,
+#include "llvm/Analysis/MLGOModels.def"
+};
+
+// 2. Generate the cl::opt with all valid compiled models
+static llvm::cl::opt<MLGOModelChoice> SelectedMLGOModel(
+    "mlgo-model",
+    llvm::cl::desc("Select the MLGO model to execute:"),
+    llvm::cl::init(MLGOModelChoice::Default),
+    llvm::cl::values(
+        clEnumValN(MLGOModelChoice::Default, "default", "Use standard heuristic")
+#define MLGO_MODEL(CLASS_NAME, CLI_FLAG) \
+        , clEnumValN(MLGOModelChoice::CLASS_NAME, CLI_FLAG, "Use the " CLI_FLAG " MLGO model")
+#include "llvm/Analysis/MLGOModels.def"
+    )
+);
+
+static std::unique_ptr<MLModelRunner> createMLGOModelRunner(LLVMContext &Ctx, const std::vector<TensorSpec> &InputFeatures, StringRef DecisionName) {
+  switch (SelectedMLGOModel) {
+    case MLGOModelChoice::Default:
+      return nullptr;
+#define MLGO_MODEL(CLASS_NAME, CLI_FLAG) \
+    case MLGOModelChoice::CLASS_NAME: \
+      return std::make_unique<EmitCModeModelRunner<CLASS_NAME>>(Ctx, InputFeatures, DecisionName);
+#include "llvm/Analysis/MLGOModels.def"
+  }
+  llvm_unreachable("Unknown MLGO model type!");
+}
+
 std::unique_ptr<InlineAdvisor>
 llvm::getReleaseModeAdvisor(Module &M, ModuleAnalysisManager &MAM,
                             std::function<bool(CallBase &)> GetDefaultAdvice) {
   if (!llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() &&
-      InteractiveChannelBaseName.empty())
+      InteractiveChannelBaseName.empty() &&
+      SelectedMLGOModel == MLGOModelChoice::Default)
     return nullptr;
   auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
       -> std::unique_ptr<MLModelRunner> {
     std::unique_ptr<MLModelRunner> AOTRunner;
-    if (InteractiveChannelBaseName.empty())
-      AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
-          M.getContext(), InputFeatures, DecisionName,
-          EmbeddedModelRunnerOptions().setModelSelector(ModelSelector));
-    else {
+    if (InteractiveChannelBaseName.empty()) {
+      if (SelectedMLGOModel != MLGOModelChoice::Default) {
+        AOTRunner = createMLGOModelRunner(M.getContext(), InputFeatures, DecisionName);
+      } else {
+        AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+            M.getContext(), InputFeatures, DecisionName,
+            EmbeddedModelRunnerOptions().setModelSelector(ModelSelector));
+      }
+    } else {
       AOTRunner = std::make_unique<InteractiveModelRunner>(
           M.getContext(), InputFeatures, InlineDecisionSpec,
           InteractiveChannelBaseName + ".out",
