@@ -55,6 +55,44 @@ using CompiledModelType = RegAllocEvictModel;
 using CompiledModelType = NoopSavedModelImpl;
 #endif
 
+#include "llvm/Analysis/EmitCModeModelRunner.h"
+
+#if defined(LLVM_HAVE_EMITC_COMPILE_REGALLOC)
+#include "llvm/CodeGen/RegAllocEvictModelMulti.h"
+
+// 1. Generate the Enum (with a fallback option)
+enum class MLGORegAllocModelChoice {
+  Default,
+#define MLGO_MODEL(CLASS_NAME, CLI_FLAG) CLASS_NAME,
+#include "llvm/CodeGen/RegAllocEvictModels.def"
+};
+
+// 2. Generate the cl::opt with all valid compiled models
+static llvm::cl::opt<MLGORegAllocModelChoice> SelectedMLGORegAllocModel(
+    "regalloc-mlgo-model",
+    llvm::cl::desc("Select the MLGO model to execute for register allocation:"),
+    llvm::cl::init(MLGORegAllocModelChoice::Default),
+    llvm::cl::values(
+        clEnumValN(MLGORegAllocModelChoice::Default, "default", "Use standard heuristic")
+#define MLGO_MODEL(CLASS_NAME, CLI_FLAG) \
+        , clEnumValN(MLGORegAllocModelChoice::CLASS_NAME, CLI_FLAG, "Use the " CLI_FLAG " MLGO model")
+#include "llvm/CodeGen/RegAllocEvictModels.def"
+    )
+);
+
+static std::unique_ptr<MLModelRunner> createMLGORegAllocModelRunner(LLVMContext &Ctx, const std::vector<TensorSpec> &InputFeatures, StringRef DecisionName) {
+  switch (SelectedMLGORegAllocModel) {
+    case MLGORegAllocModelChoice::Default:
+      return nullptr;
+#define MLGO_MODEL(CLASS_NAME, CLI_FLAG) \
+    case MLGORegAllocModelChoice::CLASS_NAME: \
+      return std::make_unique<EmitCModeModelRunner<CLASS_NAME>>(Ctx, InputFeatures, DecisionName);
+#include "llvm/CodeGen/RegAllocEvictModels.def"
+  }
+  llvm_unreachable("Unknown MLGO model type!");
+}
+#endif
+
 static cl::opt<std::string> InteractiveChannelBaseName(
     "regalloc-evict-interactive-channel-base", cl::Hidden,
     cl::desc(
@@ -368,14 +406,22 @@ public:
   getAdvisor(const MachineFunction &MF, const RAGreedy &RA,
              MachineBlockFrequencyInfo *MBFI, MachineLoopInfo *Loops) override {
     if (!Runner) {
-      if (InteractiveChannelBaseName.empty())
-        Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
-            MF.getFunction().getContext(), InputFeatures, DecisionName);
-      else
+      if (InteractiveChannelBaseName.empty()) {
+#if defined(LLVM_HAVE_EMITC_COMPILE_REGALLOC)
+        if (SelectedMLGORegAllocModel != MLGORegAllocModelChoice::Default) {
+          Runner = createMLGORegAllocModelRunner(MF.getFunction().getContext(), InputFeatures, DecisionName);
+        } else
+#endif
+        {
+          Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+              MF.getFunction().getContext(), InputFeatures, DecisionName);
+        }
+      } else {
         Runner = std::make_unique<InteractiveModelRunner>(
             MF.getFunction().getContext(), InputFeatures, DecisionSpec,
             InteractiveChannelBaseName + ".out",
             InteractiveChannelBaseName + ".in");
+      }
     }
     assert(MBFI && Loops &&
            "Invalid provider state: must have analysis available");
@@ -1035,6 +1081,9 @@ RegAllocEvictionAdvisorAnalysisLegacy *
 llvm::createReleaseModeAdvisorAnalysisLegacy() {
   return llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() ||
                  !InteractiveChannelBaseName.empty()
+#if defined(LLVM_HAVE_EMITC_COMPILE_REGALLOC)
+                 || SelectedMLGORegAllocModel != MLGORegAllocModelChoice::Default
+#endif
              ? new ReleaseModeEvictionAdvisorAnalysisLegacy()
              : nullptr;
 }

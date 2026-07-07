@@ -74,6 +74,9 @@ using CompiledModelType = NoopSavedModelImpl;
 
 #include "llvm/Analysis/EmitCModeModelRunner.h"
 
+#if defined(LLVM_HAVE_EMITC_COMPILE_INLINER)
+#include "llvm/Analysis/InlinerSizeModelMulti.h"
+
 // 1. Generate the Enum (with a fallback option)
 enum class MLGOModelChoice {
   Default,
@@ -105,21 +108,28 @@ static std::unique_ptr<MLModelRunner> createMLGOModelRunner(LLVMContext &Ctx, co
   }
   llvm_unreachable("Unknown MLGO model type!");
 }
+#endif
 
 std::unique_ptr<InlineAdvisor>
 llvm::getReleaseModeAdvisor(Module &M, ModuleAnalysisManager &MAM,
                             std::function<bool(CallBase &)> GetDefaultAdvice) {
   if (!llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() &&
-      InteractiveChannelBaseName.empty() &&
-      SelectedMLGOModel == MLGOModelChoice::Default)
+      InteractiveChannelBaseName.empty()
+#if defined(LLVM_HAVE_EMITC_COMPILE_INLINER)
+      && SelectedMLGOModel == MLGOModelChoice::Default
+#endif
+     )
     return nullptr;
   auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
       -> std::unique_ptr<MLModelRunner> {
     std::unique_ptr<MLModelRunner> AOTRunner;
     if (InteractiveChannelBaseName.empty()) {
+#if defined(LLVM_HAVE_EMITC_COMPILE_INLINER)
       if (SelectedMLGOModel != MLGOModelChoice::Default) {
         AOTRunner = createMLGOModelRunner(M.getContext(), InputFeatures, DecisionName);
-      } else {
+      } else
+#endif
+      {
         AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
             M.getContext(), InputFeatures, DecisionName,
             EmbeddedModelRunnerOptions().setModelSelector(ModelSelector));

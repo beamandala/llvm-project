@@ -1,4 +1,12 @@
-if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
+if (LLVM_HAVE_EMITC_COMPILE)
+  include(TensorFlowCompile)
+  mlgo_compile_models(
+    "${LLVM_MLGO_MODELS}"
+    "${LLVM_MLGO_MLIR_OPT}"
+    "${LLVM_MLGO_MLIR_TRANSLATE}"
+    "regalloc"
+  )
+elseif (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
   include(TensorFlowCompile)
   set(LLVM_RAEVICT_MODEL_PATH_DEFAULT "models/regalloc-eviction")
 
@@ -294,7 +302,6 @@ add_llvm_component_library(LLVMCodeGen
   TargetParser
   TransformUtils
   )
-
 add_subdirectory(SelectionDAG)
 add_subdirectory(AsmPrinter)
 add_subdirectory(MIRParser)
