@@ -1239,11 +1239,6 @@ set( CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LLVM_LIBRARY_DIR} )
 # For up-to-date instructions for installing the TFLite dependency, refer to
 # the bot setup script: https://github.com/google/ml-compiler-opt/blob/main/buildbot/buildbot_init.sh
 set(LLVM_HAVE_TFLITE "" CACHE BOOL "Use tflite")
-if (LLVM_HAVE_TFLITE)
-  find_package(tensorflow-lite REQUIRED)
-endif()
-
-set(LLVM_ENABLE_PROFCHECK OFF CACHE BOOL "Enable profile checking in test tools")
 
 set(LLVM_MLGO_MODELS "" CACHE STRING "List of AOT MLGO models")
 
@@ -1255,6 +1250,16 @@ if (NOT LLVM_MLGO_MODELS STREQUAL "")
 else()
   set(LLVM_HAVE_EMITC_COMPILE "OFF" CACHE BOOL "MLGO AOT models compiled with EmitC are available" FORCE)
 endif()
+
+if (LLVM_HAVE_EMITC_COMPILE AND LLVM_HAVE_TFLITE)
+  message(FATAL_ERROR "Only one of LLVM_HAVE_TFLITE and LLVM_HAVE_EMITC_COMPILE can be enabled.")
+endif()
+
+if (LLVM_HAVE_TFLITE)
+  find_package(tensorflow-lite REQUIRED)
+endif()
+
+set(LLVM_ENABLE_PROFCHECK OFF CACHE BOOL "Enable profile checking in test tools")
 
 # For up-to-date instructions for installing the Tensorflow dependency, refer to
 # the bot setup script: https://github.com/google/ml-compiler-opt/blob/main/buildbot/buildbot_init.sh
