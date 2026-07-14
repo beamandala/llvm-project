@@ -81,11 +81,6 @@ static bool isScalarSlice(memref::ReinterpretCastOp rc) {
   if (!rcInputTy.getLayout().isIdentity())
     return false;
 
-  // Reject non-matching ranks
-  unsigned srcRank = rcInputTy.getRank();
-  if (srcRank != rcOutputTy.getRank())
-    return false;
-
   ArrayRef<int64_t> sizes = rc.getStaticSizes();
 
   // View must be scalar: memref<1x...x1>
@@ -100,7 +95,7 @@ static bool isScalarSlice(memref::ReinterpretCastOp rc) {
     return false;
 
   // Rank-1 special case
-  if (srcRank == 1) {
+  if (rcInputTy.getRank() == 1) {
     // Reject non-scalar output
     if (rcOutputTy.getDimSize(0) > 1)
       return false;
@@ -109,7 +104,7 @@ static bool isScalarSlice(memref::ReinterpretCastOp rc) {
   int nonUnitCount =
       std::count_if(rcInputTy.getShape().begin(), rcInputTy.getShape().end(),
                     [](int dim) { return dim != 1; });
-  return nonUnitCount == 1;
+  return nonUnitCount <= 1;
 }
 
 /// Rewrites `memref.copy` of a 1-element MemRef as a scalar load-store pair
@@ -323,12 +318,13 @@ static bool isPureRankExpansionOrCollapsingRC(memref::ReinterpretCastOp rc) {
 /// Checks statically known and constant indices accessed by a load from a pure
 /// rank expansion/collapsing to ensure in-bounds only access. Fully dynamic
 /// indices are skipped (there is no way to verify them).
-[[maybe_unused]] static bool areIndicesInBounds(memref::LoadOp load) {
-  auto rc = load.getMemRef().getDefiningOp<memref::ReinterpretCastOp>();
+template <typename OpTy>
+static bool areIndicesInBounds(OpTy op) {
+  auto rc = op.getMemRef().template getDefiningOp<memref::ReinterpretCastOp>();
   auto rcOutputTy = cast<MemRefType>(rc.getResult().getType());
 
-  for (auto [pos, idx] : llvm::enumerate(load.getIndices())) {
-    // FIXME: This should be ensured by the memref.load semantics.
+  for (auto [pos, idx] : llvm::enumerate(op.getIndices())) {
+    // FIXME: This should be ensured by the memref.load/store semantics.
     // In the long term, this sanity-check may live in the same debug-only
     // checks as `MLIR_ENABLE_EXPENSIVE_PATTERN_API_CHECKS`. This rejects
     // only explicit constant OOB indices. Dynamic/non-constant indices are not
@@ -453,6 +449,102 @@ public:
   }
 };
 
+/// Rewrites `memref.store` through a pure rank-only `reinterpret_cast` by
+/// mapping the store indices directly onto the source MemRef.
+struct RewriteStoreToReinterpretCast
+    : public OpRewritePattern<memref::StoreOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::StoreOp op,
+                                PatternRewriter &rewriter) const override {
+    auto rc = op.getMemRef().getDefiningOp<memref::ReinterpretCastOp>();
+    if (!rc)
+      return rewriter.notifyMatchFailure(
+          op, "target is not a memref.reinterpret_cast");
+    if (!isPureRankExpansionOrCollapsingRC(rc))
+      return rewriter.notifyMatchFailure(
+          op, "reinterpret_cast is not a pure rank expansion or collapsing of "
+              "a single dimension");
+
+    assert(areIndicesInBounds(op) &&
+           "store to reinterpret_cast indexes out of bounds!");
+
+    auto rcOutputTy = cast<MemRefType>(rc.getResult().getType());
+    auto rcInputTy = cast<MemRefType>(rc.getSource().getType());
+
+    int64_t rcOutputRank = rcOutputTy.getRank();
+    int64_t rcInputRank = rcInputTy.getRank();
+
+    SmallVector<Value> idxs(op.getIndices().begin(), op.getIndices().end());
+    SmallVector<Value> rcInputIdxs;
+    rcInputIdxs.reserve(rcInputRank);
+
+    // The rewrite only supports reinterpret_casts with at most one non-unit
+    // dimension, located at the left or right boundary.
+    //
+    // The higher-rank side tells which side the reinterpret_cast has
+    // expanded/collapsed.
+    //
+    //   expansion: rcOutput has the higher rank
+    //   collapsing : rcInput has the higher rank
+    //
+    // Example:
+    //   memref<999>     -> memref<1x1x999>   : leading extra dims
+    //   memref<999x1x1> -> memref<999>       : trailing extra dims
+    MemRefType expandedTy =
+        rcOutputRank >= rcInputRank ? rcOutputTy : rcInputTy;
+    std::optional<ShapeInfoFor1DMemRef> expandedNonUnitDim =
+        getShapeInfoFor1DMemRef(expandedTy);
+    assert(expandedNonUnitDim && "expected a single boundary non-unit dim");
+    bool keepLeadingIndices = expandedNonUnitDim->isLeadingDimNonUnit;
+
+    if (rcOutputRank >= rcInputRank) {
+      // Rank expansion:
+      //   memref<N>     -> memref<1x1xN> : keep the last rcInputRank indices
+      //   memref<N>     -> memref<Nx1x1> : keep the first rcInputRank indices
+      //   memref<1>     -> memref<1x1x1> : all indices are zero
+      //
+      // Any discarded indices are known to be zero from
+      // areIndicesInBounds().
+      int64_t firstKeptPos =
+          keepLeadingIndices ? 0 : rcOutputRank - rcInputRank;
+      rcInputIdxs.append(idxs.begin() + firstKeptPos,
+                         idxs.begin() + firstKeptPos + rcInputRank);
+    } else {
+      // Rank collapsing:
+      //   memref<1x1xN> -> memref<N>     : reinsert leading zeros
+      //   memref<Nx1x1> -> memref<N>     : reinsert trailing zeros
+      //   memref<1x1x1> -> memref<1>     : all indices are zero
+      //
+      // The collapsed-away dimensions are unit dims, so re-adding them with
+      // zero indices preserves semantics.
+      Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+      int64_t rankDiff = rcInputRank - rcOutputRank;
+
+      if (keepLeadingIndices) {
+        rcInputIdxs.append(idxs.begin(), idxs.end());
+        rcInputIdxs.append(rankDiff, c0);
+      } else {
+        rcInputIdxs.append(rankDiff, c0);
+        rcInputIdxs.append(idxs.begin(), idxs.end());
+      }
+    }
+
+    assert(rcInputIdxs.size() == static_cast<size_t>(rcInputRank) &&
+           "Incorrect number of indices!");
+
+    auto rcInput = rc.getSource();
+    // If the only user of rc is the current Op (which is about to be erased),
+    // we can safely erase it.
+    if (rc.getResult().hasOneUse())
+      rewriter.eraseOp(rc);
+    rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), rcInput,
+                                                 rcInputIdxs);
+    return success();
+  }
+};
+
 struct ElideReinterpretCastPass
     : public memref::impl::ElideReinterpretCastPassBase<
           ElideReinterpretCastPass> {
@@ -474,6 +566,12 @@ struct ElideReinterpretCastPass
         return true;
       return !isPureRankExpansionOrCollapsingRC(rc);
     });
+    target.addDynamicallyLegalOp<memref::StoreOp>([](memref::StoreOp op) {
+      auto rc = op.getMemRef().getDefiningOp<memref::ReinterpretCastOp>();
+      if (!rc)
+        return true;
+      return !isPureRankExpansionOrCollapsingRC(rc);
+    });
     target.addLegalDialect<arith::ArithDialect, memref::MemRefDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -485,6 +583,6 @@ struct ElideReinterpretCastPass
 
 void mlir::memref::populateElideReinterpretCastPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<CopyToScalarLoadAndStore, RewriteLoadFromReinterpretCast>(
-      patterns.getContext());
+  patterns.add<CopyToScalarLoadAndStore, RewriteLoadFromReinterpretCast,
+               RewriteStoreToReinterpretCast>(patterns.getContext());
 }

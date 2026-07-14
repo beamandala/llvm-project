@@ -86,21 +86,39 @@ static std::pair<Value, Value> getFlattenMemrefAndOffset(OpBuilder &rewriter,
       getValueFromOpFoldResult(rewriter, loc, linearizedIndices));
 }
 
+static bool needFlattening(Type type) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  if (!memrefType)
+    return false;
+  return memrefType.getRank() > 1;
+}
+
 static bool needFlattening(Value val) {
-  auto type = cast<MemRefType>(val.getType());
-  return type.getRank() > 1;
+  return needFlattening(val.getType());
+}
+
+static bool checkLayout(Type type) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  if (!memrefType)
+    return false;
+  return memrefType.getLayout().isIdentity() ||
+         isa<StridedLayoutAttr>(memrefType.getLayout());
 }
 
 static bool checkLayout(Value val) {
-  auto type = cast<MemRefType>(val.getType());
-  return type.getLayout().isIdentity() ||
-         isa<StridedLayoutAttr>(type.getLayout());
+  return checkLayout(val.getType());
 }
 
 namespace {
+static bool hasSupportedElementType(Type type) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  if (!memrefType)
+    return false;
+  return memrefType.getElementType().isIntOrFloat();
+}
+
 static bool hasSupportedElementType(Value memref) {
-  auto type = cast<MemRefType>(memref.getType());
-  return type.getElementType().isIntOrFloat();
+  return hasSupportedElementType(memref.getType());
 }
 
 /// Compute the type that will be used to linearize the memref.
@@ -412,6 +430,77 @@ struct IndexedMemCopyOpFlattenPattern final
     return success();
   }
 };
+struct GlobalFlattenPattern final : public OpRewritePattern<memref::GlobalOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::GlobalOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!needFlattening(op.getType()) || !checkLayout(op.getType()))
+      return failure();
+
+    auto memrefType = cast<MemRefType>(op.getType());
+    FailureOr<MemRefType> flatMemrefType = getFlattenedMemRefType(memrefType);
+    if (failed(flatMemrefType))
+      return failure();
+
+    Attribute initialValue = op.getInitialValueAttr();
+    if (initialValue) {
+      auto denseAttr = dyn_cast<DenseElementsAttr>(initialValue);
+      if (!denseAttr)
+        return rewriter.notifyMatchFailure(op, "unsupported initial value attribute");
+      
+      auto flatTensorType = RankedTensorType::get((*flatMemrefType).getShape(), memrefType.getElementType());
+      initialValue = denseAttr.reshape(flatTensorType);
+    }
+
+    StringAttr nameAttr = op.getSymNameAttr();
+    op.setSymNameAttr(rewriter.getStringAttr(nameAttr.getValue().str() + "_temp_flatten"));
+
+    rewriter.create<memref::GlobalOp>(
+        op.getLoc(), nameAttr.getValue(), op.getSymVisibilityAttr(),
+        *flatMemrefType, initialValue, op.getConstant(), op.getAlignmentAttr());
+    
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct GetGlobalFlattenPattern final : public OpRewritePattern<memref::GetGlobalOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::GetGlobalOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!needFlattening(op.getType()) || !checkLayout(op.getType()))
+      return failure();
+
+    auto memrefType = cast<MemRefType>(op.getType());
+    FailureOr<MemRefType> flatMemrefType = getFlattenedMemRefType(memrefType);
+    if (failed(flatMemrefType))
+      return failure();
+
+    Location loc = op->getLoc();
+    auto newGetGlobal = rewriter.create<memref::GetGlobalOp>(
+        loc, *flatMemrefType, op.getNameAttr());
+
+    int64_t staticOffset;
+    SmallVector<int64_t> staticStrides;
+    if (failed(memrefType.getStridesAndOffset(staticStrides, staticOffset)))
+      return failure();
+    
+    SmallVector<OpFoldResult> sizes;
+    for (int64_t size : memrefType.getShape())
+      sizes.push_back(rewriter.getIndexAttr(size));
+
+    SmallVector<OpFoldResult> strides;
+    for (int64_t stride : staticStrides)
+      strides.push_back(rewriter.getIndexAttr(stride));
+
+    rewriter.replaceOpWithNewOp<memref::ReinterpretCastOp>(
+        op, memrefType, newGetGlobal,
+        rewriter.getIndexAttr(staticOffset), sizes, strides);
+    return success();
+  }
+};
 
 struct FlattenMemrefsPass
     : public mlir::memref::impl::FlattenMemrefsPassBase<FlattenMemrefsPass> {
@@ -438,6 +527,7 @@ void memref::populateFlattenMemrefsPatterns(RewritePatternSet &patterns) {
   patterns.insert<IndexedAccessOpFlattenPattern, IndexedMemCopyOpFlattenPattern,
                   VectorTransferOpFlattenPattern,
                   AllocLikeFlattenPattern<memref::AllocOp>,
-                  AllocLikeFlattenPattern<memref::AllocaOp>>(
+                  AllocLikeFlattenPattern<memref::AllocaOp>,
+                  GlobalFlattenPattern, GetGlobalFlattenPattern>(
       patterns.getContext());
 }
