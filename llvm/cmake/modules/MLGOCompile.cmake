@@ -67,7 +67,7 @@ function(mlgo_compile_models models target_type include_subdir def_file
     string(APPEND DEF_CONTENT "MLGO_MODEL(${CLASS_NAME}, \"${CLI_FLAG}\")\n")
 
     # Append to the master header content
-    string(APPEND HEADERS_CONTENT "#include \"${include_subdir}/${CLASS_NAME}.h\"\n")
+    string(APPEND HEADERS_CONTENT "namespace ${CLASS_NAME}_ns {\n#include \"${include_subdir}/${CLASS_NAME}.h\"\n}\nusing ${CLASS_NAME}_ns::${CLASS_NAME};\n")
   endforeach()
 
   string(APPEND DEF_CONTENT "\n#undef MLGO_MODEL\n")
