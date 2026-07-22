@@ -2,8 +2,6 @@ if (LLVM_HAVE_EMITC_COMPILE)
   include(MLGOCompile)
   mlgo_compile_models(
     "${LLVM_MLGO_MODELS}"
-    "${LLVM_MLGO_MLIR_OPT}"
-    "${LLVM_MLGO_MLIR_TRANSLATE}"
     regalloc
     llvm/CodeGen
     RegAllocEvictModels.def

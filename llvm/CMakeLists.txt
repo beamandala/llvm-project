@@ -1242,11 +1242,9 @@ set(LLVM_HAVE_TFLITE "" CACHE BOOL "Use tflite")
 
 set(LLVM_MLGO_MODELS "" CACHE STRING "List of AOT MLGO models")
 
-set(LLVM_MLGO_MLIR_OPT "mlir-opt" CACHE STRING "Path or target name for mlir-opt")
-set(LLVM_MLGO_MLIR_TRANSLATE "mlir-translate" CACHE STRING "Path or target name for mlir-translate")
-
 if (NOT LLVM_MLGO_MODELS STREQUAL "")
   set(LLVM_HAVE_EMITC_COMPILE "ON" CACHE BOOL "MLGO AOT models compiled with EmitC are available" FORCE)
+  set(LLVM_USE_HOST_TOOLS ON CACHE BOOL "Enable host tools build for native compilation" FORCE)
 else()
   set(LLVM_HAVE_EMITC_COMPILE "OFF" CACHE BOOL "MLGO AOT models compiled with EmitC are available" FORCE)
 endif()
