@@ -33,6 +33,42 @@ module attributes {transform.with_named_sequence} {
 
 // -----
 
+// CHECK-DAG: memref.global "private" @[[ALLOC0:alloc.*]] : memref<2x32xf32>
+// CHECK-DAG: memref.global "private" @[[ALLOC1:alloc.*]] : memref<2x32xf32>
+
+// CHECK-DAG: func.func @func_alloc(%[[LB:.*]]: index, %[[UB:.*]]: index)
+func.func @func_alloc(%lb: index, %ub: index) {
+  // CHECK-DAG: scf.forall (%[[ARG0:.*]], %[[ARG1:.*]]) in (%[[LB]], %[[UB]])
+  scf.forall (%arg0, %arg1) in (%lb, %ub) {
+    // CHECK-DAG: %[[MR0:.*]] = memref.get_global @[[ALLOC0]] : memref<2x32xf32>
+    // CHECK-DAG: %[[MR1:.*]] = memref.get_global @[[ALLOC1]] : memref<2x32xf32>
+    // CHECK-DAG: memref.store %{{.*}}, %[[MR0]][%{{.*}}, %{{.*}}] : memref<2x32xf32>
+    // CHECK-DAG: memref.store %{{.*}}, %[[MR1]][%{{.*}}, %{{.*}}] : memref<2x32xf32>
+    // CHECK-NOT: memref.dealloc
+    %cst = arith.constant 0.0 : f32
+    %mr0 = memref.alloc() : memref<2x32xf32>
+    %mr1 = memref.alloc() : memref<2x32xf32>
+    memref.store %cst, %mr0[%arg0, %arg1] : memref<2x32xf32>
+    memref.store %cst, %mr1[%arg0, %arg1] : memref<2x32xf32>
+    memref.dealloc %mr0 : memref<2x32xf32>
+    memref.dealloc %mr1 : memref<2x32xf32>
+  }
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %alloc = transform.structured.match ops{["memref.alloc"]} in %arg0
+        : (!transform.any_op) -> !transform.op<"memref.alloc">
+    %get_global, %global = transform.memref.alloc_to_global %alloc
+          : (!transform.op<"memref.alloc">)
+            -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
+
+// -----
+
 // CHECK-DAG: #[[$MAP0:.*]] = affine_map<(d0) -> ((d0 floordiv 4) mod 2)>
 // CHECK-DAG: #[[$MAP1:.*]] = affine_map<(d0)[s0] -> (d0 + s0)>
 

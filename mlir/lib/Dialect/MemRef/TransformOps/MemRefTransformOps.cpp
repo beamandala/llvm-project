@@ -187,6 +187,77 @@ void transform::MemRefAllocaToGlobalOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// AllocToGlobalOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::MemRefAllocToGlobalOp::apply(transform::TransformRewriter &rewriter,
+                                         transform::TransformResults &results,
+                                         transform::TransformState &state) {
+  auto allocOps = state.getPayloadOps(getAlloc());
+
+  SmallVector<memref::GlobalOp> globalOps;
+  SmallVector<memref::GetGlobalOp> getGlobalOps;
+
+  // Transform `memref.alloc`s.
+  for (auto *op : allocOps) {
+    auto alloc = cast<memref::AllocOp>(op);
+    MLIRContext *ctx = rewriter.getContext();
+    Location loc = alloc->getLoc();
+
+    memref::GlobalOp globalOp;
+    {
+      // Find nearest symbol table.
+      Operation *symbolTableOp = SymbolTable::getNearestSymbolTable(op);
+      assert(symbolTableOp && "expected alloc payload to be in symbol table");
+      SymbolTable symbolTable(symbolTableOp);
+
+      // Insert a `memref.global` into the symbol table.
+      Type resultType = alloc.getResult().getType();
+      OpBuilder builder(rewriter.getContext());
+      // TODO: Add a better builder for this.
+      globalOp = memref::GlobalOp::create(
+          builder, loc, StringAttr::get(ctx, "alloc"),
+          StringAttr::get(ctx, "private"), TypeAttr::get(resultType),
+          Attribute{}, UnitAttr{}, IntegerAttr{});
+      symbolTable.insert(globalOp);
+    }
+
+    // Remove any `memref.dealloc` operations referencing this allocation.
+    // We assume that the allocation does not escape the current container
+    // (e.g., via return or interprocedural function calls), so any deallocation
+    // is a direct user of the `memref.alloc`. This scopes complexity and avoids
+    // the need for interprocedural escape analysis.
+    for (Operation *user : llvm::make_early_inc_range(alloc->getUsers())) {
+      if (auto dealloc = dyn_cast<memref::DeallocOp>(user))
+        rewriter.eraseOp(dealloc);
+    }
+
+    // Replace the `memref.alloc` with a `memref.get_global` accessing the
+    // global symbol inserted above.
+    rewriter.setInsertionPoint(alloc);
+    auto getGlobalOp = rewriter.replaceOpWithNewOp<memref::GetGlobalOp>(
+        alloc, globalOp.getType(), globalOp.getName());
+
+    globalOps.push_back(globalOp);
+    getGlobalOps.push_back(getGlobalOp);
+  }
+
+  // Assemble results.
+  results.set(cast<OpResult>(getGlobal()), globalOps);
+  results.set(cast<OpResult>(getGetGlobal()), getGlobalOps);
+
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::MemRefAllocToGlobalOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  producesHandle(getOperation()->getOpResults(), effects);
+  consumesHandle(getAllocMutable(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // MemRefMultiBufferOp
 //===----------------------------------------------------------------------===//
 

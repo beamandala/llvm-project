@@ -47,6 +47,19 @@ function(mlgo_compile_models models mlir_opt mlir_translate target_type
     set(EMITC_MLIR "${CMAKE_CURRENT_BINARY_DIR}/${CLASS_NAME}_emitc.mlir")
     set(HEADER_FILE "${LLVM_INCLUDE_DIR}/${include_subdir}/${CLASS_NAME}.h")
 
+    set(TRANSFORM_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/alloc_to_global.mlir")
+    file(WRITE "${TRANSFORM_SCRIPT}" "
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{[\"memref.alloc\"]} in %arg0
+        : (!transform.any_op) -> !transform.op<\"memref.alloc\">
+    %get_globals, %globals = transform.memref.alloc_to_global %allocs
+        : (!transform.op<\"memref.alloc\">) -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
+")
+
     # Pass pipeline to lower MLIR models to EmitC dialect
     set(EMITC_PASSES
       "func.func(tosa-to-linalg-named,tosa-to-linalg,tosa-to-arith,tosa-to-tensor)"
@@ -56,6 +69,8 @@ function(mlgo_compile_models models mlir_opt mlir_translate target_type
       "buffer-results-to-out-params{hoist-static-allocs=true}"
       "func.func(promote-buffers-to-stack)"
       "buffer-deallocation-pipeline"
+      "transform-preload-library{transform-library-paths=${TRANSFORM_SCRIPT}}"
+      "transform-interpreter"
       "func.func(convert-linalg-to-loops)"
       "expand-strided-metadata"
       "canonicalize"
@@ -75,7 +90,7 @@ function(mlgo_compile_models models mlir_opt mlir_translate target_type
     add_custom_command(OUTPUT ${EMITC_MLIR}
       COMMAND ${mlir_opt} "--pass-pipeline=${PASS_PIPELINE}"
       ${MODEL_PATH} -o ${EMITC_MLIR}
-      DEPENDS ${MODEL_PATH}
+      DEPENDS ${MODEL_PATH} ${TRANSFORM_SCRIPT}
       VERBATIM
     )
 

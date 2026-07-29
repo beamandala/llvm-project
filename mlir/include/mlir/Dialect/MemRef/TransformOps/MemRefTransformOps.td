@@ -206,6 +206,76 @@ def MemRefAllocaToGlobalOp :
   }];
 }
 
+def MemRefAllocToGlobalOp :
+  Op<Transform_Dialect, "memref.alloc_to_global",
+     [TransformOpInterface,
+      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+      DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let description = [{
+    Inserts a new `memref.global` for each provided `memref.alloc` into the
+    nearest symbol table (e.g., a `builtin.module`) and replaces it with a
+    `memref.get_global`. Any `memref.dealloc` operations referencing the
+    allocation are also removed, since the memory is no longer dynamically
+    allocated.
+
+    This transformation assumes that the allocation does not escape the current
+    container (e.g., it is not returned from the function or passed to another
+    function that deallocates it). Under this assumption, all
+    `memref.dealloc` operations deallocating the buffer are local, direct users
+    of the `memref.alloc` operation and are removed directly without requiring
+    interprocedural escape analysis.
+
+    #### Example
+
+    Consider the following transform op:
+
+    ```mlir
+    %get_global, %global =
+        transform.memref.alloc_to_global %alloc
+          : (!transform.op<"memref.alloc">)
+            -> (!transform.any_op, !transform.any_op)
+    ```
+
+    and the following input payload:
+
+    ```mlir
+    module {
+      func.func @func() {
+        %alloc = memref.alloc() : memref<2x32xf32>
+        // usages of %alloc...
+        memref.dealloc %alloc : memref<2x32xf32>
+      }
+    }
+    ```
+
+    then applying the transform op to the payload would result in the following
+    output IR:
+
+    ```mlir
+    module {
+      memref.global "private" @alloc : memref<2x32xf32>
+      func.func @func() {
+        %alloc = memref.get_global @alloc : memref<2x32xf32>
+        // usages of %alloc...
+      }
+    }
+    ```
+
+    #### Return modes
+
+    Succeeds always. The returned handles refer to the `memref.get_global` and
+    `memref.global` ops that were inserted by the transformation.
+  }];
+
+  let arguments = (ins Transform_MemRefAllocOp:$alloc);
+  let results = (outs TransformHandleTypeInterface:$getGlobal,
+                  TransformHandleTypeInterface:$global);
+
+  let assemblyFormat = [{
+    $alloc attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def MemRefMultiBufferOp : Op<Transform_Dialect, "memref.multibuffer",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
